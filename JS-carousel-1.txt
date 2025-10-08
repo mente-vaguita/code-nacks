@@ -1,0 +1,529 @@
+<!-- ======================================
+     [ Carousel 1 of publications - Blogger ]
+     ====================================== -->   
+<script>/* <![CDATA[ */ 
+// Carousel-1 only logic extracted
+(function () {
+  "use strict";
+  // === CONFIGURACIÓN GLOBAL ===
+  const CONFIG = {
+    apiPath: "/feeds/posts/default",
+    imageSize: "s100-c",
+    skeletonItems: 3,
+    poolSize: 12,
+    cacheTimeout: 5 * 60 * 1000,
+    imageTimeout: 3000,
+    retryAttempts: 2,
+  };
+  // --- Cache and Manager are shared, but used for both carousel types ---
+  const Cache = {
+    data: new Map(),
+    set(key, value) { this.data.set(key, { value: value, timestamp: Date.now() }); },
+    get(key) {
+      const item = this.data.get(key);
+      if (!item) return null;
+      if (Date.now() - item.timestamp > CONFIG.cacheTimeout) {
+        this.data.delete(key);
+        return null;
+      }
+      return item.value;
+    },
+    clear() { this.data.clear(); },
+  };
+  const CarouselManager = {
+    instances: new Map(),
+    register(element, emblaInstance, type) {
+      const id = this.getId(element);
+      if (this.instances.has(id)) { this.destroy(id); }
+      this.instances.set(id, {
+        element: element,
+        embla: emblaInstance,
+        type: type,
+        observers: new Set(),
+      });
+    },
+    destroy(id) {
+      const instance = this.instances.get(id);
+      if (instance) {
+        try {
+          if (instance.embla && typeof instance.embla.destroy === "function") {
+            instance.embla.destroy();
+          }
+          instance.observers.forEach((observer) => {
+            if (observer && typeof observer.disconnect === "function") {
+              observer.disconnect();
+            }
+          });
+          instance.element._emblaInstance = null;
+        } catch (error) {
+          console.warn(`Error destruyendo carrusel ${id}:`, error);
+        }
+        this.instances.delete(id);
+      }
+    },
+    getId(element) {
+      if (!element.dataset.carouselId) {
+        element.dataset.carouselId = "carousel_" + Math.random().toString(36).substr(2, 9);
+      }
+      return element.dataset.carouselId;
+    },
+    destroyAll() {
+      for (const [id] of this.instances) {
+        this.destroy(id);
+      }
+    },
+  };
+  // --- Utility functions, some are shared ---
+  function validateImageUrl(url) {
+    return new Promise((resolve) => {
+      if (!url) { resolve(false); return; }
+      const img = new Image();
+      const timeout = setTimeout(() => {
+        img.onload = img.onerror = null;
+        resolve(false);
+      }, CONFIG.imageTimeout);
+      img.onload = () => {
+        clearTimeout(timeout);
+        resolve(img.naturalWidth >= 100 && img.naturalHeight >= 100);
+      };
+      img.onerror = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+      img.src = url;
+    });
+  }
+  function hasMedia(entry) {
+    const content = entry.content?.$t || "";
+    return /(?:youtube\.com|youtu\.be|vimeo\.com|<video|<audio|class=['"]audioPlayer['"]|open\.spotify\.com|soundcloud\.com)/i.test(content);
+  }
+  function getPostImage(entry) {
+    const targetSize = CONFIG.imageSize;
+    const content = entry.content?.$t || "";
+    const imgMatches = content.match(/<img[^>]+src=["']([^"']+)["'][^>]*>/gi) || [];
+    const allImages = [];
+    for (const imgTag of imgMatches) {
+      const srcMatch = imgTag.match(/src=["']([^"']+)["']/i);
+      if (!srcMatch) continue;
+      const imageUrl = srcMatch[1];
+      const widthMatch = imgTag.match(/width=["']?(\d+)["']?/i);
+      const heightMatch = imgTag.match(/height=["']?(\d+)["']?/i);
+      let width = widthMatch ? parseInt(widthMatch[1]) : 0;
+      let height = heightMatch ? parseInt(heightMatch[1]) : 0;
+      if (
+        (imageUrl.includes("blogspot.com") || imageUrl.includes("googleusercontent.com")) &&
+        (!width || !height)
+      ) {
+        const sizeMatch = imageUrl.match(/\/s(\d+)(?:-c)?/);
+        if (sizeMatch) {
+          const size = parseInt(sizeMatch[1]);
+          width = width || size;
+          height = height || size;
+        }
+      }
+      allImages.push({
+        url: imageUrl,
+        width: width,
+        height: height,
+        isYouTube: imageUrl.includes("ytimg.com") || imageUrl.includes("youtube.com"),
+        isVimeo: imageUrl.includes("vimeo"),
+      });
+    }
+    const normalImages = allImages.filter((img) => !img.isYouTube && !img.isVimeo);
+    const videoImages = allImages.filter((img) => img.isYouTube || img.isVimeo);
+    if (normalImages.length > 0) {
+      const qualityImages = normalImages.filter((img) => {
+        const isIcon =
+          /icon|favicon|logo/i.test(img.url) ||
+          /\/(16|24|32|48|64)\//.test(img.url) ||
+          (img.width > 0 && img.width < 100) ||
+          (img.height > 0 && img.height < 100);
+        return !isIcon;
+      });
+      if (qualityImages.length > 0) {
+        const scoredImages = qualityImages.map((img) => {
+          const area = (img.width || 400) * (img.height || 300);
+          const aspectRatio = (img.width || 400) / (img.height || 300);
+          let sizeScore = 1;
+          if (img.width >= 300 && img.width <= 600) sizeScore = 1.5;
+          if (img.width >= 400 && img.width <= 500) sizeScore = 2;
+          const idealRatios = [16 / 9, 4 / 3, 3 / 2];
+          const ratioScore = Math.max(...idealRatios.map(
+            (ideal) => 1 / (1 + Math.abs(aspectRatio - ideal)),
+          ));
+          return { ...img, score: area * sizeScore * ratioScore };
+        });
+        scoredImages.sort((a, b) => b.score - a.score);
+        const bestImage = scoredImages[0];
+        if (
+          bestImage.url.includes("blogspot.com") ||
+          bestImage.url.includes("googleusercontent.com")
+        ) {
+          return bestImage.url.replace(/\/s\d+-c?/, `/${targetSize}`);
+        }
+        return bestImage.url;
+      }
+    }
+    if (videoImages.length > 0) {
+      const videoImage = videoImages[0];
+      if (videoImage.isYouTube) {
+        const videoId = videoImage.url.match(/\/vi\/([^\/]+)\//)?.[1];
+        if (videoId) {
+          return `https://img.youtube.com/vi/${videoId}/sddefault.jpg`;
+        }
+      }
+      return videoImage.url;
+    }
+    const youtubeId = content.match(
+      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
+    )?.[1];
+    if (youtubeId) {
+      return `https://img.youtube.com/vi/${youtubeId}/sddefault.jpg`;
+    }
+    const vimeoId = content.match(/player\.vimeo\.com\/video\/(\d+)/i)?.[1];
+    if (vimeoId) {
+      return `https://vumbnail.com/${vimeoId}_medium.jpg`;
+    }
+    if (entry.media$thumbnail?.url) {
+      let imageUrl = entry.media$thumbnail.url;
+      if (imageUrl.includes("ytimg.com")) {
+        const videoId = imageUrl.match(/\/vi\/([^\/]+)\//)?.[1];
+        if (videoId) {
+          return `https://img.youtube.com/vi/${videoId}/sddefault.jpg`;
+        }
+      }
+      if (
+        imageUrl.includes("blogspot.com") ||
+        imageUrl.includes("googleusercontent.com")
+      ) {
+        const sizeMatch = imageUrl.match(/\/s(\d+)(?:-c)?/);
+        if (sizeMatch) {
+          const size = parseInt(sizeMatch[1]);
+          if (size >= 400) {
+            return imageUrl.replace(/\/s\d+-c/, `/${targetSize}`);
+          }
+        }
+      }
+      return imageUrl;
+    }
+    return null;
+  }
+  function getPostLabel(entry) {
+    const category = entry.category?.[0];
+    if (category) {
+      return {
+        name: category.term,
+        url: `${window.location.origin}/search/label/${encodeURIComponent(category.term)}`,
+      };
+    }
+    return null;
+  }
+  function shuffleArray(array) {
+    const result = [...array];
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }
+  function buildApiUrl(label = null, maxResults = 6) {
+    const baseUrl = `${window.location.origin}${CONFIG.apiPath}`;
+    let url = `${baseUrl}?alt=json&max-results=${maxResults}`;
+    if (label?.trim()) {
+      url += `&category=${encodeURIComponent(label.trim())}`;
+    }
+    return url;
+  }
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+  // Skeleton for carousel-1
+  function createSkeleton() {
+    const skeleton = document.createElement("div");
+    skeleton.className = "carousel-skeleton";
+    for (let i = 0; i < CONFIG.skeletonItems; i++) {
+      const item = document.createElement("div");
+      item.className = "skeletonCarousel-item";
+      item.innerHTML = `
+        <div class="skeletonCarousel-thumbnail"></div>
+        <div class="skeletonCarousel-content">
+          <div class="skeletonCarousel-label"></div>
+          <div class="skeletonCarousel-title"></div>
+          <div class="skeletonCarousel-title"></div>
+        </div>
+      `;
+      skeleton.appendChild(item);
+    }
+    return skeleton;
+  }
+  // HTML generators for carousel-1
+  function createPostHTML(entry, index) {
+    const imageUrl = getPostImage(entry);
+    const label = getPostLabel(entry);
+    const title = entry.title.$t;
+    const postUrl = entry.link.find((link) => link.rel === "alternate")?.href;
+    const hasMediaIcon = hasMedia(entry);
+    const prefix = "postCarousel";
+    const thumbnailHTML = imageUrl
+      ? `<img src="${imageUrl}" alt="${title}" loading="lazy">`
+      : `<div class="${prefix}-noImage">Sin Imagen</div>`;
+    const playIconHTML = hasMediaIcon
+      ? `<div class="${prefix}-playIcon">
+           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+         </div>`
+      : "";
+    const labelHTML = label
+      ? `<div class="${prefix}-label">
+           <a href="${label.url}">${label.name}</a>
+         </div>`
+      : "";
+    const content = entry.content?.$t || "";
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = content;
+    const labelTerms =
+      entry.category?.map((cat) => cat.term.toLowerCase()) || [];
+    const hasProductLabel =
+      labelTerms.includes("products") || labelTerms.includes("productos");
+    let stockHTML = "";
+    let priceHTML = "";
+    if (hasProductLabel) {
+      const stockEl = tempDiv.querySelector(".product-stock");
+      const priceEl = tempDiv.querySelector(".product-price");
+      if (stockEl) {
+        const stockText = stockEl.textContent.trim();
+        const isOut = /out of stock|agotado|no disponible/i.test(stockText);
+        stockHTML = `<div class="${prefix}-stock${isOut ? " out" : ""}">${stockText}</div>`;
+      }
+      if (priceEl) {
+        const priceText = priceEl.textContent.trim();
+        priceHTML = `<div class="${prefix}-price">${priceText}</div>`;
+      }
+    }
+    return `
+      <div class="${prefix}-item" style="animation-delay: ${index * 0.05}s">
+        <div class="${prefix}-thumbnail">
+          <a href="${postUrl}">
+            ${thumbnailHTML}
+            ${playIconHTML}
+          </a>
+        </div>
+        <div class="${prefix}-content">
+          ${labelHTML}
+          <h3 class="${prefix}-title">
+            <a href="${postUrl}">${title}</a>
+          </h3>
+          ${stockHTML}
+          ${priceHTML}
+        </div>
+      </div>
+    `;
+  }
+  function createCarouselHTML(posts) {
+    const postsHTML = posts
+      .map(
+        (post, index) =>
+          `<div class="carousel__slide">${createPostHTML(post, index)}</div>`,
+      )
+      .join("");
+    return `
+      <div class="carousel">
+        <div class="carousel__container">
+          ${postsHTML}
+        </div>
+        <div class="carousel__controls">
+          <button class="carousel__button carousel__button--prev" type="button" aria-label="Anterior">
+            <svg viewBox="0 0 24 24">
+              <polyline points="15,18 9,12 15,6"></polyline>
+            </svg>
+          </button>
+          <button class="carousel__button carousel__button--next" type="button" aria-label="Siguiente">
+            <svg viewBox="0 0 24 24">
+              <polyline points="9,18 15,12 9,6"></polyline>
+            </svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+  function initEmblaCarousel(container, autoplay = false) {
+    const emblaNode = container.querySelector(".carousel");
+    if (!emblaNode) return null;
+    const prevBtn = container.querySelector(".carousel__button--prev");
+    const nextBtn = container.querySelector(".carousel__button--next");
+    const options = {
+      align: "start",
+      containScroll: "trimSnaps",
+      slidesToScroll: 1,
+      loop: autoplay,
+      skipSnaps: false,
+    };
+    const plugins = [];
+    if (autoplay && typeof EmblaCarouselAutoplay !== "undefined") {
+      plugins.push(
+        EmblaCarouselAutoplay({
+          delay: 4e3,
+          stopOnInteraction: false,
+          stopOnMouseEnter: true,
+        }),
+      );
+    }
+    try {
+      const embla = EmblaCarousel(emblaNode, options, plugins);
+      const updateButtons = debounce(() => {
+        if (prevBtn) prevBtn.disabled = !embla.canScrollPrev();
+        if (nextBtn) nextBtn.disabled = !embla.canScrollNext();
+      }, 50);
+      if (prevBtn) prevBtn.addEventListener("click", () => embla.scrollPrev());
+      if (nextBtn) nextBtn.addEventListener("click", () => embla.scrollNext());
+      embla.on("select", updateButtons);
+      embla.on("init", updateButtons);
+      return embla;
+    } catch (error) {
+      console.error(`Error inicializando carousel-1:`, error);
+      return null;
+    }
+  }
+  async function fetchWithRetry(url, attempts = CONFIG.retryAttempts) {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) return response;
+        throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        if (i === attempts - 1) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 1e3 * (i + 1)));
+      }
+    }
+  }
+  async function loadPosts(labels, maxResults, isRandom) {
+    const cacheKey = `posts_${labels.join(",")}_${maxResults}_${isRandom}_c1`;
+    const cached = Cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    try {
+      let allPosts = [];
+      if (labels?.length > 0) {
+        const fetchSize = isRandom ? CONFIG.poolSize : maxResults;
+        const promises = labels.map(async (label) => {
+          try {
+            const url = buildApiUrl(label, fetchSize);
+            const response = await fetchWithRetry(url);
+            const data = await response.json();
+            return (data.feed?.entry || []).map((post) => ({
+              ...post,
+              _sourceLabel: label,
+            }));
+          } catch (error) {
+            console.warn(`Error cargando etiqueta "${label}":`, error);
+            return [];
+          }
+        });
+        const results = await Promise.all(promises);
+        allPosts = results.flat();
+      } else {
+        const fetchSize = isRandom ? CONFIG.poolSize * 2 : maxResults;
+        const url = buildApiUrl(null, fetchSize);
+        const response = await fetchWithRetry(url);
+        const data = await response.json();
+        allPosts = data.feed?.entry || [];
+      }
+      const seen = new Set();
+      allPosts = allPosts.filter((post) => {
+        const url = post.link?.find((link) => link.rel === "alternate")?.href;
+        if (!url || seen.has(url)) return false;
+        seen.add(url);
+        return true;
+      });
+      if (isRandom && allPosts.length > 0) {
+        allPosts = shuffleArray(allPosts);
+      }
+      const finalPosts = allPosts.slice(0, maxResults);
+      Cache.set(cacheKey, finalPosts);
+      return finalPosts;
+    } catch (error) {
+      console.warn("Error cargando posts:", error);
+      return [];
+    }
+  }
+  async function initCarousel(element) {
+    element.classList.add("carousel-loading");
+    try {
+      const labelAttr = element.getAttribute("data-label") || "";
+      const maxResults = Math.min(
+        parseInt(element.getAttribute("data-max")) || 6,
+        20,
+      );
+      const isRandom = element.getAttribute("data-random") === "true";
+      const autoplay = element.getAttribute("data-autoplay") === "true";
+      const labels = labelAttr
+        ? labelAttr
+            .split(",")
+            .map((l) => l.trim())
+            .filter(Boolean)
+        : [];
+      const skeleton = createSkeleton();
+      element.appendChild(skeleton);
+      const posts = await loadPosts(labels, maxResults, isRandom);
+      if (skeleton.parentNode) {
+        skeleton.parentNode.removeChild(skeleton);
+      }
+      if (posts.length === 0) {
+        element.innerHTML = `<div class="carousel-noPosts">No se encontraron publicaciones.</div>`;
+        return;
+      }
+      element.innerHTML = createCarouselHTML(posts);
+      const embla = initEmblaCarousel(element, autoplay);
+      if (embla) {
+        CarouselManager.register(element, embla, "carousel-1");
+        element._emblaInstance = embla;
+      }
+    } catch (error) {
+      console.error("Error inicializando carrusel-1:", error);
+      element.innerHTML = `<div class="carousel-error">Error al cargar el carrusel. <button onclick="window.BloggerCarousel1.init(this.closest('.carousel-1'))">Reintentar</button></div>`;
+    } finally {
+      element.classList.remove("carousel-loading");
+    }
+  }
+  function initAllCarousels() {
+    const carousels1 = document.querySelectorAll(".carousel-1:not([data-initialized])");
+    [...carousels1].forEach((carousel) => {
+      carousel.setAttribute("data-initialized", "true");
+      initCarousel(carousel);
+    });
+  }
+  window.addEventListener("beforeunload", () => {
+    CarouselManager.destroyAll();
+    Cache.clear();
+  });
+  let currentUrl = window.location.href;
+  const urlObserver = new MutationObserver(() => {
+    if (window.location.href !== currentUrl) {
+      currentUrl = window.location.href;
+      CarouselManager.destroyAll();
+      setTimeout(initAllCarousels, 500);
+    }
+  });
+  urlObserver.observe(document.body, { childList: true, subtree: true });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initAllCarousels);
+  } else {
+    setTimeout(initAllCarousels, 100);
+  }
+  window.BloggerCarousel1 = {
+    init: initCarousel,
+    initAll: initAllCarousels,
+    cache: Cache,
+    manager: CarouselManager,
+    config: CONFIG,
+  };
+})(); 
+/* ]]> */</script>

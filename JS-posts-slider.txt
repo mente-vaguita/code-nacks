@@ -1,0 +1,773 @@
+<!-- ==========================
+     [ Posts Slider - Blogger ]
+     ========================== -->
+<script>/* <![CDATA[ */ /* Posts Slider - Slider de Publicaciones con Contenido Completo */
+(function () {
+  "use strict";
+
+  /* === CONFIGURACIÓN PARA POSTS SLIDER === */
+  const SLIDER_CONFIG = {
+    imageSize: "s400", // Tamaño para portadas de libros/revistas
+    imageSizeYT: "mqdefault", // YouTube thumbnail ligero (~15KB)
+    skeletonItems: 1, // Solo 1 skeleton (es un slide completo)
+    poolMultiplier: 3, // Pool 3x más grande para aleatorios
+    summaryLength: 120, // Caracteres del resumen
+    authorAvatarSize: "s32", // Tamaño avatar 32px
+  };
+
+  /* === FUNCIONES UTILITARIAS MEJORADAS === */
+
+  // Algoritmo de mezcla mejorado con doble pasada
+  function shuffleArrayEnhanced(array) {
+    if (!array || array.length <= 1) return array;
+
+    const result = [...array];
+
+    // Primera pasada: Fisher-Yates clásico
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+
+    // Segunda pasada: Mezcla adicional para mejor distribución
+    for (let i = 0; i < result.length - 1; i += 2) {
+      if (Math.random() > 0.5) {
+        const range = Math.min(3, result.length - i - 1);
+        const j = Math.min(
+          i + Math.floor(Math.random() * range) + 1,
+          result.length - 1,
+        );
+        [result[i], result[j]] = [result[j], result[i]];
+      }
+    }
+
+    return result;
+  }
+
+  // Validación de imagen para slider
+  function validateSliderImage(url) {
+    return new Promise((resolve) => {
+      if (!url) {
+        resolve(false);
+        return;
+      }
+
+      const img = new Image();
+      const timeout = setTimeout(() => {
+        img.onload = img.onerror = null;
+        resolve(false);
+      }, 3000);
+
+      img.onload = () => {
+        clearTimeout(timeout);
+        // Para slider aceptamos imágenes más pequeñas también
+        resolve(img.naturalWidth >= 80 && img.naturalHeight >= 80);
+      };
+
+      img.onerror = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+
+      img.src = url;
+    });
+  }
+
+  // Obtener imagen optimizada para slider
+  function getSliderImage(entry) {
+    const content = entry.content?.$t || "";
+    const imgMatches =
+      content.match(/<img[^>]+src=["']([^"']+)["'][^>]*>/gi) || [];
+    const allImages = [];
+
+    // Procesar todas las imágenes encontradas
+    for (const imgTag of imgMatches) {
+      const srcMatch = imgTag.match(/src=["']([^"']+)["']/i);
+      if (!srcMatch) continue;
+
+      const imageUrl = srcMatch[1];
+      const widthMatch = imgTag.match(/width=["']?(\d+)["']?/i);
+      const heightMatch = imgTag.match(/height=["']?(\d+)["']?/i);
+
+      let width = widthMatch ? parseInt(widthMatch[1]) : 0;
+      let height = heightMatch ? parseInt(heightMatch[1]) : 0;
+
+      allImages.push({
+        url: imageUrl,
+        width: width,
+        height: height,
+        isYouTube:
+          imageUrl.includes("ytimg.com") || imageUrl.includes("youtube.com"),
+        isVimeo:
+          imageUrl.includes("vimeo") || imageUrl.includes("vumbnail.com"),
+      });
+    }
+
+    // Separar imágenes normales de videos
+    const normalImages = allImages.filter(
+      (img) => !img.isYouTube && !img.isVimeo,
+    );
+    const videoImages = allImages.filter((img) => img.isYouTube || img.isVimeo);
+
+    // Priorizar imágenes normales de calidad
+    if (normalImages.length > 0) {
+      const qualityImages = normalImages.filter((img) => {
+        const isIcon =
+          /icon|favicon|logo/i.test(img.url) ||
+          /\/(16|24|32|48|64)\//.test(img.url) ||
+          (img.width > 0 && img.width < 80) ||
+          (img.height > 0 && img.height < 80);
+        return !isIcon;
+      });
+
+      if (qualityImages.length > 0) {
+        // Seleccionar la primera imagen de calidad
+        const bestImage = qualityImages[0];
+        if (
+          bestImage.url.includes("blogspot.com") ||
+          bestImage.url.includes("googleusercontent.com")
+        ) {
+          return bestImage.url.replace(
+            /\/s\d+-c?/,
+            `/${SLIDER_CONFIG.imageSize}`,
+          );
+        }
+        return bestImage.url;
+      }
+    }
+
+    // Si hay video, extraer thumbnail
+    if (videoImages.length > 0) {
+      const videoImage = videoImages[0];
+
+      if (videoImage.isYouTube) {
+        const videoId = videoImage.url.match(/\/vi\/([^\/]+)\//)?.[1];
+        if (videoId) {
+          return `https://i.ytimg.com/vi/${videoId}/${SLIDER_CONFIG.imageSizeYT}.jpg`;
+        }
+      }
+
+      return videoImage.url;
+    }
+
+    // Buscar YouTube ID en el contenido
+    const youtubeId = content.match(
+      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
+    )?.[1];
+    if (youtubeId) {
+      return `https://i.ytimg.com/vi/${youtubeId}/${SLIDER_CONFIG.imageSizeYT}.jpg`;
+    }
+
+    // Buscar Vimeo ID
+    const vimeoId = content.match(/player\.vimeo\.com\/video\/(\d+)/i)?.[1];
+    if (vimeoId) {
+      return `https://vumbnail.com/${vimeoId}_medium.jpg`;
+    }
+
+    // Media thumbnail como última opción
+    if (entry.media$thumbnail?.url) {
+      let imageUrl = entry.media$thumbnail.url;
+
+      if (imageUrl.includes("ytimg.com")) {
+        const videoId = imageUrl.match(/\/vi\/([^\/]+)\//)?.[1];
+        if (videoId) {
+          return `https://i.ytimg.com/vi/${videoId}/${SLIDER_CONFIG.imageSizeYT}.jpg`;
+        }
+      }
+
+      if (
+        imageUrl.includes("blogspot.com") ||
+        imageUrl.includes("googleusercontent.com")
+      ) {
+        return imageUrl.replace(/\/s\d+-c?/, `/${SLIDER_CONFIG.imageSize}`);
+      }
+
+      return imageUrl;
+    }
+
+    return null;
+  }
+
+  // Obtener resumen del post
+  function getPostSummary(entry) {
+    // Priorizar summary si existe
+    if (entry.summary?.$t) {
+      const summary = entry.summary.$t.trim();
+      if (summary.length > SLIDER_CONFIG.summaryLength) {
+        return summary.substring(0, SLIDER_CONFIG.summaryLength).trim() + "...";
+      }
+      return summary;
+    }
+
+    // Extraer texto del contenido
+    const content = entry.content?.$t || "";
+    const temp = document.createElement("div");
+    temp.innerHTML = content;
+
+    // Remover scripts y estilos
+    temp.querySelectorAll("script, style").forEach((el) => el.remove());
+
+    const text = temp.textContent.trim().replace(/\s+/g, " ");
+
+    if (text.length > SLIDER_CONFIG.summaryLength) {
+      return text.substring(0, SLIDER_CONFIG.summaryLength).trim() + "...";
+    }
+
+    return text || "Sin descripción disponible.";
+  }
+
+  // Obtener información del autor
+  function getAuthorInfo(entry) {
+    const author = entry.author?.[0];
+
+    if (!author) {
+      return {
+        name: "Autor desconocido",
+        avatar: "",
+      };
+    }
+
+    let avatarUrl = author.gd$image?.src || "";
+
+    // Ajustar tamaño del avatar de Blogger
+    if (avatarUrl) {
+      avatarUrl = avatarUrl.replace(
+        /\/s\d+-c?/,
+        `/${SLIDER_CONFIG.authorAvatarSize}`,
+      );
+    }
+
+    return {
+      name: author.name?.$t || "Autor desconocido",
+      avatar: avatarUrl,
+    };
+  }
+
+  // Detectar si tiene media (para ícono de play)
+  function hasMediaContent(entry) {
+    const content = entry.content?.$t || "";
+    return /(?:youtube\.com|youtu\.be|vimeo\.com|<video|<audio|class=['"]audioPlayer['"]|open\.spotify\.com|soundcloud\.com)/i.test(
+      content,
+    );
+  }
+
+  // Obtener etiqueta del post
+  function getPostLabel(entry) {
+    const category = entry.category?.[0];
+    if (category) {
+      return {
+        name: category.term,
+        url: `${window.location.origin}/search/label/${encodeURIComponent(category.term)}`,
+      };
+    }
+    return null;
+  }
+
+  /* === SKELETON LOADER === */
+  function createSliderSkeleton() {
+    const skeleton = document.createElement("div");
+    skeleton.className = "slider-skeleton";
+
+    skeleton.innerHTML = `
+      <div class="skeleton-slide">
+        <div class="skeleton-slide-thumbnail"></div>
+        <div class="skeleton-slide-content">
+          <div class="skeleton-slide-label"></div>
+          <div class="skeleton-slide-title"></div>
+          <div class="skeleton-slide-title"></div>
+          <div class="skeleton-slide-summary"></div>
+          <div class="skeleton-slide-summary"></div>
+          <div class="skeleton-slide-summary"></div>
+          <div class="skeleton-slide-author">
+            <div class="skeleton-slide-avatar"></div>
+            <div class="skeleton-slide-name"></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    return skeleton;
+  }
+
+  /* === GENERADORES DE HTML === */
+  function createSlideHTML(entry, index) {
+    const imageUrl = getSliderImage(entry);
+    const label = getPostLabel(entry);
+    const title = entry.title.$t;
+    const postUrl = entry.link.find((link) => link.rel === "alternate")?.href;
+    const summary = getPostSummary(entry);
+    const author = getAuthorInfo(entry);
+    const hasMedia = hasMediaContent(entry);
+
+    // Thumbnail HTML
+    const thumbnailHTML = imageUrl
+      ? `<img src="${imageUrl}" alt="${title}" loading="lazy" decoding="async">`
+      : `<div class="slide1-noImage">Sin Imagen</div>`;
+
+    // Play Icon HTML
+    const playIconHTML = hasMedia
+      ? `<div class="slide1-playIcon">
+           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+         </div>`
+      : "";
+
+    // Label HTML
+    const labelHTML = label
+      ? `<div class="slide1-label">
+           <a href="${label.url}">${label.name}</a>
+         </div>`
+      : "";
+
+    // Avatar HTML
+    const avatarHTML = author.avatar
+      ? `<img src="${author.avatar}" alt="${author.name}" class="slide1-avatar" loading="lazy">`
+      : `<div class="slide1-avatar"></div>`;
+
+    return `
+      <div class="slide1-item" style="animation-delay: ${index * 0.1}s">
+        <div class="slide1-thumbnail">
+          <a href="${postUrl}">
+            ${thumbnailHTML}
+            ${playIconHTML}
+          </a>
+        </div>
+        <div class="slide1-content">
+          ${labelHTML}
+          <h2 class="slide1-title">
+            <a href="${postUrl}">${title}</a>
+          </h2>
+          <p class="slide1-summary">${summary}</p>
+          <div class="slide1-author">
+            ${avatarHTML}
+            <span class="slide1-authorName">${author.name}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function createSliderHTML(posts) {
+    const slidesHTML = posts
+      .map(
+        (post, index) =>
+          `<div class="posts-slider__slide">${createSlideHTML(post, index)}</div>`,
+      )
+      .join("");
+
+    return `
+      <div class="posts-slider__viewport">
+        <div class="posts-slider__container">
+          ${slidesHTML}
+        </div>
+        <div class="posts-slider__controls">
+          <button class="posts-slider__button posts-slider__button--prev" type="button" aria-label="Anterior">
+            <svg viewBox="0 0 24 24">
+              <polyline points="15,18 9,12 15,6"></polyline>
+            </svg>
+          </button>
+          <button class="posts-slider__button posts-slider__button--next" type="button" aria-label="Siguiente">
+            <svg viewBox="0 0 24 24">
+              <polyline points="9,18 15,12 9,6"></polyline>
+            </svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /* === INICIALIZACIÓN DE EMBLA === */
+  function initEmblaSlider(container, autoplay = false) {
+    const emblaNode = container.querySelector(".posts-slider__viewport");
+    if (!emblaNode) return null;
+
+    const prevBtn = container.querySelector(".posts-slider__button--prev");
+    const nextBtn = container.querySelector(".posts-slider__button--next");
+
+    const options = {
+      align: "start",
+      containScroll: "trimSnaps",
+      slidesToScroll: 1,
+      loop: autoplay,
+      skipSnaps: false,
+    };
+
+    const plugins = [];
+
+    // AutoHeight es obligatorio para posts-slider
+    if (typeof EmblaCarouselAutoHeight !== "undefined") {
+      plugins.push(
+  EmblaCarouselAutoHeight({
+    container: emblaNode.querySelector(".carousel2__container"),
+    destroyHeight: "auto",
+  })
+);
+
+    }
+
+    // AutoPlay opcional
+    if (autoplay && typeof EmblaCarouselAutoplay !== "undefined") {
+      plugins.push(
+        EmblaCarouselAutoplay({
+          delay: 5000,
+          stopOnInteraction: false,
+          stopOnMouseEnter: true,
+        }),
+      );
+    }
+
+    try {
+      const embla = EmblaCarousel(emblaNode, options, plugins);
+
+      // Debounce para updateButtons
+      const debounce = (func, wait) => {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
+      };
+
+      const updateButtons = debounce(() => {
+        if (prevBtn) prevBtn.disabled = !embla.canScrollPrev();
+        if (nextBtn) nextBtn.disabled = !embla.canScrollNext();
+      }, 50);
+
+      // Event Listeners para botones
+      if (prevBtn) prevBtn.addEventListener("click", () => embla.scrollPrev());
+      if (nextBtn) nextBtn.addEventListener("click", () => embla.scrollNext());
+
+      // Actualizar botones en eventos
+      embla.on("select", updateButtons);
+      // Actualizar botones en eventos
+      embla.on("select", updateButtons);
+      embla.on("init", updateButtons);
+
+      // Fix: Altura dinámica en cada cambio de slide
+      const forceHeightUpdate = function () {
+        setTimeout(function () {
+          var currentIndex = embla.selectedScrollSnap();
+          var slides = embla.slideNodes();
+          var currentSlide = slides[currentIndex];
+
+          if (currentSlide) {
+            var content = currentSlide.querySelector(".slide1-item");
+            if (content) {
+              emblaNode.style.height = content.offsetHeight + "px";
+            }
+          }
+        }, 10);
+      };
+
+      embla.on("select", forceHeightUpdate);
+      embla.on("init", forceHeightUpdate);
+      embla.on("resize", forceHeightUpdate);
+
+      // Lazy loading de imágenes
+      embla.on("init", updateButtons);
+
+      // Lazy loading de imágenes
+      const imageObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              const img = entry.target;
+              if (img.dataset.src) {
+                img.src = img.dataset.src;
+                img.removeAttribute("data-src");
+                imageObserver.unobserve(img);
+              }
+            }
+          });
+        },
+        { rootMargin: "50px" },
+      );
+
+      // Re-init cuando las imágenes cargan
+      const images = emblaNode.querySelectorAll('img[loading="lazy"]');
+      images.forEach((img) => {
+        if (img.complete) {
+          forceHeightUpdate();
+        } else {
+          img.addEventListener(
+            "load",
+            function () {
+              forceHeightUpdate();
+            },
+            { once: true },
+          );
+        }
+      });
+
+      // Registrar observer en el manager
+      const carouselId = window.BloggerCarousel?.manager?.getId(container);
+      if (carouselId) {
+        const instance =
+          window.BloggerCarousel.manager.instances.get(carouselId);
+        if (instance) {
+          instance.observers.add(imageObserver);
+        }
+      }
+
+      return embla;
+    } catch (error) {
+      console.error("Error inicializando posts-slider:", error);
+      return null;
+    }
+  }
+
+  /* === CARGA DE DATOS === */
+  async function fetchWithRetry(url, attempts = 2) {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) return response;
+        throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        if (i === attempts - 1) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
+      }
+    }
+  }
+
+  function buildApiUrl(label = null, maxResults = 6) {
+    const baseUrl = `${window.location.origin}/feeds/posts/default`;
+    let url = `${baseUrl}?alt=json&max-results=${maxResults}`;
+    if (label?.trim()) {
+      url += `&category=${encodeURIComponent(label.trim())}`;
+    }
+    return url;
+  }
+
+  async function loadSliderPosts(labels, maxResults, isRandom) {
+    // Usar cache del sistema principal
+    const cacheKey = `slider_${labels.join(",")}_${maxResults}_${isRandom}`;
+    const cached = window.BloggerCarousel?.cache?.get(cacheKey);
+
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      let allPosts = [];
+
+      // Calcular tamaño del pool para aleatorios
+      const fetchSize = isRandom
+        ? maxResults * SLIDER_CONFIG.poolMultiplier
+        : maxResults;
+
+      if (labels?.length > 0) {
+        const promises = labels.map(async (label) => {
+          try {
+            const url = buildApiUrl(label, fetchSize);
+            const response = await fetchWithRetry(url);
+            const data = await response.json();
+            return (data.feed?.entry || []).map((post) => ({
+              ...post,
+              _sourceLabel: label,
+            }));
+          } catch (error) {
+            console.warn(`Error cargando etiqueta "${label}":`, error);
+            return [];
+          }
+        });
+
+        const results = await Promise.all(promises);
+        allPosts = results.flat();
+      } else {
+        const url = buildApiUrl(null, fetchSize);
+        const response = await fetchWithRetry(url);
+        const data = await response.json();
+        allPosts = data.feed?.entry || [];
+      }
+
+      // Deduplicación estricta por URL
+      const seen = new Set();
+      allPosts = allPosts.filter((post) => {
+        const url = post.link?.find((link) => link.rel === "alternate")?.href;
+        if (!url || seen.has(url)) return false;
+        seen.add(url);
+        return true;
+      });
+
+      // Mezcla mejorada si es aleatorio
+      if (isRandom && allPosts.length > 0) {
+        allPosts = shuffleArrayEnhanced(allPosts);
+      }
+
+      // Limitar al máximo solicitado
+      const finalPosts = allPosts.slice(0, maxResults);
+
+      // Guardar en cache
+      if (window.BloggerCarousel?.cache) {
+        window.BloggerCarousel.cache.set(cacheKey, finalPosts);
+      }
+
+      return finalPosts;
+    } catch (error) {
+      console.warn("Error cargando posts para slider:", error);
+      return [];
+    }
+  }
+
+  /* === FUNCIÓN PRINCIPAL DE INICIALIZACIÓN === */
+  async function initPostsSlider(element) {
+    element.classList.add("slider-loading");
+
+    try {
+      // Leer atributos
+      const labelAttr = element.getAttribute("data-label") || "";
+      const maxResults = Math.min(
+        parseInt(element.getAttribute("data-max")) || 6,
+        20,
+      );
+      const isRandom = element.getAttribute("data-random") === "true";
+      const autoplay = element.getAttribute("data-autoplay") === "true";
+
+      // Procesar etiquetas
+      const labels = labelAttr
+        ? labelAttr
+            .split(",")
+            .map((l) => l.trim())
+            .filter(Boolean)
+        : [];
+
+      // Mostrar skeleton
+      const skeleton = createSliderSkeleton();
+      element.appendChild(skeleton);
+
+      // Preconnect a dominios de imágenes (optimización)
+      const preconnectDomains = [
+        "https://i.ytimg.com",
+        "https://vumbnail.com",
+        "https://lh3.googleusercontent.com",
+      ];
+
+      preconnectDomains.forEach((domain) => {
+        const link = document.createElement("link");
+        link.rel = "preconnect";
+        link.href = domain;
+        if (!document.querySelector(`link[href="${domain}"]`)) {
+          document.head.appendChild(link);
+        }
+      });
+
+      // Cargar posts
+      const posts = await loadSliderPosts(labels, maxResults, isRandom);
+
+      // Remover skeleton
+      if (skeleton.parentNode) {
+        skeleton.parentNode.removeChild(skeleton);
+      }
+
+      // Validar posts
+      if (posts.length === 0) {
+        element.innerHTML = `<div class="slider-noPosts">No se encontraron publicaciones.</div>`;
+        return;
+      }
+
+      // Generar HTML
+      element.innerHTML = createSliderHTML(posts);
+
+      // Pequeño delay para que el DOM se estabilice
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Inicializar Embla
+      const embla = initEmblaSlider(element, autoplay);
+
+      if (embla) {
+        // Registrar en el CarouselManager
+        if (window.BloggerCarousel?.manager) {
+          window.BloggerCarousel.manager.register(
+            element,
+            embla,
+            "posts-slider",
+          );
+        }
+        element._emblaInstance = embla;
+      }
+    } catch (error) {
+      console.error("Error inicializando posts-slider:", error);
+      element.innerHTML = `
+        <div class="slider-error">
+          Error al cargar el slider. 
+          <button onclick="window.BloggerPostsSlider.init(this.closest('.posts-slider'))">
+            Reintentar
+          </button>
+        </div>
+      `;
+    } finally {
+      element.classList.remove("slider-loading");
+    }
+  }
+
+  /* === INICIALIZACIÓN AUTOMÁTICA === */
+  function initAllPostsSliders() {
+    const sliders = document.querySelectorAll(
+      ".posts-slider:not([data-initialized])",
+    );
+
+    sliders.forEach((slider) => {
+      slider.setAttribute("data-initialized", "true");
+      initPostsSlider(slider);
+    });
+  }
+
+  /* === EVENT LISTENERS === */
+
+  // Inicializar cuando el DOM esté listo
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initAllPostsSliders);
+  } else {
+    setTimeout(initAllPostsSliders, 100);
+  }
+
+  // Observer para cambios de URL (SPA-like)
+  let currentUrl = window.location.href;
+  const urlObserver = new MutationObserver(() => {
+    if (window.location.href !== currentUrl) {
+      currentUrl = window.location.href;
+
+      // Destruir sliders antiguos
+      if (window.BloggerCarousel?.manager) {
+        const instances = window.BloggerCarousel.manager.instances;
+        instances.forEach((instance, id) => {
+          if (instance.type === "posts-slider") {
+            window.BloggerCarousel.manager.destroy(id);
+          }
+        });
+      }
+
+      // Re-inicializar
+      setTimeout(initAllPostsSliders, 500);
+    }
+  });
+
+  urlObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+
+  // Limpiar antes de salir
+  window.addEventListener("beforeunload", () => {
+    if (window.BloggerCarousel?.manager) {
+      const instances = window.BloggerCarousel.manager.instances;
+      instances.forEach((instance, id) => {
+        if (instance.type === "posts-slider") {
+          window.BloggerCarousel.manager.destroy(id);
+        }
+      });
+    }
+  });
+
+  /* === API PÚBLICA === */
+  window.BloggerPostsSlider = {
+    init: initPostsSlider,
+    initAll: initAllPostsSliders,
+    config: SLIDER_CONFIG,
+  };
+})();
+/* ]]> */</script>

@@ -1,0 +1,44 @@
+/* === HTML - widgets === */
+
+/* Carousel 1 - Diseño Horizontal */
+
+<!-- Opción 1: Posts Recientes de una o múltiples etiqueta -->
+<div class="carousel-1" data-label="Styles Guide" data-max="6"></div>
+
+<!-- Opción 2: Posts Aleatorios de una o múltiples Etiquetas -->
+<div class="carousel-1" data-label="Products,Courses,Styles Guide" data-max="8" data-random="true"></div>
+
+<!-- Opción 3: Posts Aleatorios de cualquier etiqueta con Autoplay -->
+<div class="carousel-1" data-label="" data-max="6" data-random="true" data-autoplay="true"></div>
+
+/* Carousel 2 - Diseño Vertical */
+
+<!-- Opción 1: Posts Recientes de una o múltiples etiqueta -->
+<div class="carousel-2" data-label="Styles Guide" data-max="6"></div>
+
+<!-- Opción 2: Posts Aleatorios de una o múltiples Etiquetas -->
+<div class="carousel-2" data-label="Products,Courses,Styles Guide" data-max="8" data-random="true"></div>
+
+<!-- Opción 3: Posts Aleatorios de cualquier etiqueta con Autoplay -->
+<div class="carousel-2" data-label="" data-max="6" data-random="true" data-autoplay="true"></div>
+
+
+/* Posts Slider - Con título y extracto (Incluye imagen, título y un pequeño resumen del post) */
+
+<!-- Opción 1: Posts Recientes de una o múltiples etiqueta -->
+<div class="posts-slider" data-label="Styles Guide" data-max="6"></div>
+
+<!-- Opción 2: Posts Aleatorios de una o múltiples Etiquetas -->
+<div class="posts-slider" data-label="Products,Courses,Styles Guide" data-max="8" data-random="true"></div>
+
+<!-- Opción 3: Posts Aleatorios de cualquier etiqueta con Autoplay -->
+<div class="posts-slider" data-label="" data-max="6" data-random="true" data-autoplay="true"></div>
+
+
+/* Notas de Configuración */
+
+Atributos Disponibles:
+- data-label: Etiquetas separadas por comas (vacío = todas las etiquetas)
+- data-max: Número máximo de posts a mostrar
+- data-random: true/false - Ordenación aleatoria
+- data-autoplay: true/false - Reproducción automática
